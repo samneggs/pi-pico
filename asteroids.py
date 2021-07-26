@@ -1,5 +1,5 @@
 from LCD_1inch14 import LCD_1inch14
-from machine import Pin,SPI,PWM
+from machine import Pin,SPI,PWM, Timer
 import framebuf, math
 import utime
 from random import randint, randrange
@@ -27,6 +27,7 @@ class Ship():
         self.size = size
         self.coll = self.size*5
         self.exp = 0
+        self.damage = True
         self.pt = []
         self.ptrad = ptrad   # radius - points
         self.ptdeg = ptdeg   # degrees - points
@@ -46,6 +47,28 @@ p = []         # point list
 a = []         # asteroid point list
 e = []         # explode point list
 asteroid = []  # big asteroids
+t=[]           # title letters
+let_rad= []
+let_deg= []
+let_deg.append([54,270,126,90,54])                      # A
+let_rad.append([17,18,17,4,17])
+let_deg.append([306,270,234,54,90,126])                 # S
+let_rad.append([17,18,17,17,18,17])
+let_deg.append( [234, 306, 270, 90] )                   # T   
+let_rad.append( [17, 17, 12, 14] )
+let_deg.append( [306, 234, 0, 126, 54] )                # E
+let_rad.append( [17, 17, 0, 17, 17] )
+let_deg.append( [0, 306, 270, 234, 126, 191, 0, 60] )   # R
+let_rad.append( [0, 17, 16, 17, 17, 10, 0, 16] )       
+let_deg.append( [306, 270, 234, 126, 90, 54, 306] )     # O
+let_rad.append( [17, 16, 17, 17, 16, 17, 17] )         
+let_deg.append( [306, 270, 234, 270, 90, 54, 90, 126] ) # I
+let_rad.append( [17, 16, 17, 14, 14, 17, 16, 17] )
+let_deg.append( [234, 270, 0, 90, 126, 234] )           # D
+let_rad.append( [17, 14, 10, 14, 17, 17] )
+let_deg.append([306,270,234,54,90,126])                 # S
+let_rad.append([17,18,17,17,18,17])
+
 
 
 token = 0      # muli-thread nonesense
@@ -76,7 +99,27 @@ def init_icos():            # integer cos lookup table
     for i in range(0,361):
         icos[i]=int(math.cos(math.radians(i))*100000)
      
-
+def init_title():
+    for i in range(0,9):
+        t.append(init_obj(let_deg[i],let_rad[i],len(let_deg[i]),1,10+i*26,50,1))
+        t[i].ax=0
+        t[i].ay=0
+        draw_object(t[i])
+    while (key0.value() != 0):
+        for i in t:
+            draw_object(i)
+        LCD.show()
+    for i in t:
+        init_explode(i,50,.5)
+        while len(e)>5:
+            explode()           
+            LCD.show()
+        explode_cleanup()
+        i.size=0
+        draw_object(i)
+        #LCD.show()
+    LCD.fill(LCD.black)
+    
 
 def init_obj(ptdeg,ptrad,pts,tumble,x,y,size):
     obj = Ship(ptdeg,ptrad,pts,tumble,x,y,size)                    #reset obj
@@ -95,19 +138,21 @@ def init_ast():                      # old dot asteroids
 def init_asteroids():
     global num_asteroids
     for i in range(0,num_asteroids):   
-        asteroid.append(init_obj([0,60,120,180,240,300],[randint(6,9) for _ in range(7)],6,randint(-3,3),randint(10,230),randint(10,125),3))
+        asteroid.append(init_obj([0,60,120,180,240,300,0],[7]+[randint(6,9) for _ in range(5)]+[7],7,randint(-3,3),randint(10,230),randint(10,125),3))
 
 def draw_object(obj):
     global token
     token = 0
     for i in range(0,obj.pts-1):
         LCD.line(obj.pt[i].x,obj.pt[i].y,obj.pt[i+1].x,obj.pt[i+1].y,LCD.black) # erase old obj
-    LCD.line(obj.pt[i+1].x,obj.pt[i+1].y,obj.pt[0].x,obj.pt[0].y,LCD.black)
     if (obj.exp == 0 and obj.tumble==0) or (obj.size>0 and obj.tumble!=0):
         move_object(obj)
+        if ship.damage==False:
+            c=LCD.red
+        else:
+            c=LCD.green
         for i in range(0,obj.pts-1):
-            LCD.line(obj.pt[i].x,obj.pt[i].y,obj.pt[i+1].x,obj.pt[i+1].y,LCD.green) # draw new obj
-        LCD.line(obj.pt[i+1].x,obj.pt[i+1].y,obj.pt[0].x,obj.pt[0].y,LCD.green)
+            LCD.line(obj.pt[i].x,obj.pt[i].y,obj.pt[i+1].x,obj.pt[i+1].y,c) # draw new obj
     token = 1
 
 def slow_ship():
@@ -150,7 +195,6 @@ def move_object(obj):
         deg=int(obj.deg+obj.ptdeg[i])
         if deg>359:
             deg-=360
-        #print(deg)
         obj.pt[i].x=int(obj.ptrad[i]*obj.size*icos[deg]/100000+obj.x)   
         obj.pt[i].y=int(obj.ptrad[i]*obj.size*isin[deg]/100000+obj.y)
 
@@ -193,8 +237,8 @@ def fire():
 #         rad=math.radians(ship.deg)
 #         m[i].ax=ship.ax+math.cos(rad)*2  # missile accel of ship + 2x
 #         m[i].ay=ship.ay+math.sin(rad)*2
-        m[i].ax=ship.ax+icos[ship.deg]/100000*2  # missile accel of ship + 2x
-        m[i].ay=ship.ay+isin[ship.deg]/100000*2
+        m[i].ax=ship.ax+icos[ship.deg]/100000*3  # missile accel of ship + 3x
+        m[i].ay=ship.ay+isin[ship.deg]/100000*3
 
 
 
@@ -214,8 +258,7 @@ def move_miss():  # !!! OLD !!!
                     explode_cleanup()
                     init_explode(a[j],10,3)
                     a[j].exp=1
-                    d=m.pop(i)   # delete missile
-                    
+                    d=m.pop(i)   # delete missile                    
                 j+=1
         else:
             d=m.pop(i)   # delete missile
@@ -235,13 +278,12 @@ def move_miss_new():
                     LCD.pixel(int(m[i].x),int(m[i].y),LCD.black)
                     asteroid[j].size-=1
                     asteroid[j].coll-=3
-                    asteroid.append(init_obj([0,60,120,180,240,300],[7,6,7,6,7,6],6,randint(-3,3),asteroid[j].x+randint(-20,20),asteroid[j].y+randint(-20,20),asteroid[j].size))
+                    asteroid.append(init_obj([0,60,120,180,240,300,0],[7,6,7,6,7,6,7],7,randint(-3,3),asteroid[j].x+randint(-20,20),asteroid[j].y+randint(-20,20),asteroid[j].size))
                     draw_object(asteroid[j])
                     explode_cleanup()
                     init_explode(asteroid[j],10,3)
                     asteroid[j].exp=1
-                    d=m.pop(i)   # delete missile
-                    
+                    d=m.pop(i)   # delete missile                    
                 j+=1
         else:
             d=m.pop(i)   # delete missile
@@ -276,7 +318,7 @@ def move_asteroid():    # move big asteroids
     i=0
     while i<len(asteroid):
         draw_object(asteroid[i])
-        if ship.exp == 0 and ship.x < asteroid[i].x+asteroid[i].coll and ship.x > asteroid[i].x-asteroid[i].coll and ship.y < asteroid[i].y+asteroid[i].coll and ship.y > asteroid[i].y-asteroid[i].coll and asteroid[i].exp == 0:
+        if ship.damage and ship.exp == 0 and ship.x < asteroid[i].x+asteroid[i].coll and ship.x > asteroid[i].x-asteroid[i].coll and ship.y < asteroid[i].y+asteroid[i].coll and ship.y > asteroid[i].y-asteroid[i].coll and asteroid[i].exp == 0:
             ship.exp = 2
         if asteroid[i].exp > 0:
             explode()
@@ -313,6 +355,10 @@ def explode_cleanup():
         LCD.pixel(int(e[0].x),int(e[0].y),LCD.black)
         d=e.pop(0)
 
+def no_damage(timer):
+    ship.damage = True
+    
+
 def show_display():       # crashes after few seconds
     global token
     while True:
@@ -335,28 +381,28 @@ if __name__=='__main__':
     init_isin() 
     init_icos()
 
-    ship=init_obj([0,140,220],[3,3,3],3,0,randint(10,230),randint(10,125),3)
-
-
+    ship=init_obj([0,140,220,0],[3,3,3,3],4,0,randint(10,230),randint(10,125),3)
+    init_title()
+    tim = Timer()      #set the timer
+    
+    
     try:
         while(1):
             if len(asteroid)==0:             # no more asteroids
-                #init_ast()
                 init_asteroids()
                 num_asteroids+=1
+                ship.damage=False
+                tim.init(mode=Timer.ONE_SHOT, period=2000, callback=no_damage)
             if ship.exp == 1 and len(e) < 5: # explosion done
                 explode_cleanup()
                 ship.exp = 0
-                ship=init_obj([0,140,220],[3,3,3],3,0,randint(10,230),randint(10,125),3)
-                #init_ast
-                e = []                       # clear all points
+                ship=init_obj([0,140,220,0],[3,3,3,3],4,0,randint(10,230),randint(10,125),3)
+                tim.init(mode=Timer.ONE_SHOT, period=2000, callback=no_damage)
             buttons()
             draw_object(ship)
             move_asteroid()                  # move big asteroid
             slow_ship()
             move_miss_new()
-#            move_miss()
-#            move_ast()
             if ship.exp == 2:                # 2=init
                 explode_cleanup()
                 init_explode(ship,90,1)
@@ -374,7 +420,8 @@ if __name__=='__main__':
             
     except KeyboardInterrupt:
         print('fps=',fps)
-        print('asteroids',len(asteroid),asteroid[0].x,asteroid[0].y)
+        print('asteroids',len(asteroid),asteroid[0].x,asteroid[0].y, asteroid[0].pt[0].x,asteroid[0].pt[0].y)
+        print('asteroid size',asteroid[0].size)
         print('explosion',len(e))
         
 
