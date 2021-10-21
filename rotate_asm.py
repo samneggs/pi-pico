@@ -5,6 +5,9 @@ from time import sleep_ms, sleep_us, ticks_diff, ticks_us, sleep
 from micropython import const
 from uctypes import addressof
 import array
+from usys import exit
+import gc
+import _thread
 
 SCREEN_WIDTH = const(350)
 SCREEN_HEIGHT = const(220)
@@ -18,6 +21,7 @@ CTL_DEG=const(16)
 CTL_M1=const(20)
 CTL_M2=const(24)
 SCALE=const(12)
+SCALE2=const(13)
 
 class Sprite():
     def __init__(self):
@@ -80,18 +84,18 @@ class Sprite():
         bgt(HLOOP)
     @staticmethod
     @micropython.asm_thumb
-    def copy_asm(r0,r1,r2): # r0=source address, r1=dest address, r2= # of words     
+    def copy_asm(r0,r1,r2): # r0=source address, r1=dest address, r2= # of words (h x w)    
         label(start)
         label(LOOP)
-        ldrh(r3, [r0, 0]) # load data from source
-        strh(r3, [r1, 0]) # store data to dest
-        add(r0, 2)        # add n to source address
-        add(r1, 2)        # sub n from dest address
-        sub(r2, 1)        # dec number of words
+        ldr(r3, [r0, 0])  # load data from source
+        str(r3, [r1, 0])  # store data to dest
+        add(r0, 4)        # add 4 to source address
+        add(r1, 4)        # add 4 from dest address
+        sub(r2, 2)        # dec number of words
         bgt(LOOP)         # branch if not done
     @staticmethod
     @micropython.asm_thumb
-    def flip_asm(r0,r1,r2): # r0=source address, r1=dest address, r2= # of words    
+    def back_to_front_asm(r0,r1,r2): # r0=source address, r1=dest address, r2= # of words    
         label(start)
         add(r1,r1,r2)     # set r1 to end of array
         add(r1,r1,r2)     # 4 * words
@@ -101,6 +105,14 @@ class Sprite():
         add(r0, 2)        # add n to source address
         sub(r1, 2)        # sub n from dest address
         sub(r2, 1)        # dec number of words
+        bgt(LOOP)         # branch if not done
+    @staticmethod
+    @micropython.asm_thumb
+    def fill_asm(r0,r1,r2): # r0=address, r1= # of words, r2=data
+        label(LOOP)
+        strh(r2, [r0, 0]) # store data in address of r0
+        add(r0, 2)        # add 2 to address (next word)
+        sub(r1, 1)        # dec number of words
         bgt(LOOP)         # branch if not done
     def rotate(self,new_dir):
         while(1):
@@ -130,29 +142,22 @@ class Sprite():
 
 
 def init_isin():            # integer sin lookup table    
-    for i in range(0,361):
-        isin[i]=int(sin(radians(i))*8192) # 2<<12
-        #print(i,isin[i])
+    for i in range(0,360):
+        isin[i]=int(sin(radians(i))*(2<<SCALE))
     s.control[0]=addressof(isin)
     
         
 
 def init_icos():            # integer cos lookup table 
-    for i in range(0,361):
-        icos[i]=int(cos(radians(i))*8192)
+    for i in range(0,360):
+        icos[i]=int(cos(radians(i))*(2<<SCALE))
     s.control[1]=addressof(icos)
           
         
-s=Sprite()
 
-color = 0
-lcd = LCD_3inch5()
-lcd.bl_ctrl(50)
-lcd.Fill(lcd.BLACK)
 
 @micropython.native
 def rotate(deg):
-    rad=deg*pi/180
     r1=range(99)
     for y in r1:
         r2=range(99)
@@ -161,13 +166,7 @@ def rotate(deg):
             if c:
                 #rot_math(deg,x,y,c)
                 irot_math(deg,x,y,c) 
-                #x3=x
-                #y3=y
-                #x2=int(x3*cos(rad)+y3*sin(rad))
-                #y2=int(y3*cos(rad)-x3*sin(rad))
-                #x2 = int(50 + cos(rad) * (x - 50) - sin(rad) * (y - 50))
-                #y2 = int(50 + sin(rad) * (x - 50) + cos(rad) * (y - 50))
-                #sprite2.pixel(x2,y2,c)
+                
 
 @micropython.native
 def rot_math(deg,x,y,c):
@@ -194,18 +193,68 @@ def irot_math(deg,x,y,c):
     qy = int(offset_y - sin_rad * adjusted_x//8192 + cos_rad * adjusted_y//8192)
     #print(qx,offset_x,cos_rad * adjusted_x//8192,sin_rad * adjusted_y//8192)
     #exit()
-    s.sprite2.pixel(qx,qy,c) 
+    s.sprite2.pixel(qx,qy,c)
+    
+@micropython.viper
+def rot_viper(deg:int):
+    sin=ptr32(isin)
+    cos=ptr32(icos)
+    source=ptr16(s.sprite)
+    dest  =ptr16(s.sprite2)
+    y=0
+    i=0
+    while y<100: 
+        x=0
+        while x<100:
+            #c=s.sprite.pixel(x,y)
+            c=source[i]
+            if c:
+                offset_x = 50
+                offset_y = 50
+                adjusted_x = (x - offset_x)
+                adjusted_y = (y - offset_y)
+                cos_rad = cos[deg]
+                sin_rad = sin[deg]
+                qx = offset_x 
+                qx+= cos_rad * adjusted_x>>SCALE2
+                qx+= sin_rad * adjusted_y>>SCALE2
+                if qx<0 or qx>100:
+                    break
+                qy = offset_y
+                qy+= sin_rad * adjusted_x>>SCALE2
+                qy-= cos_rad * adjusted_y>>SCALE2
+                if qy<0 or qy>100:
+                    break
+                #s.sprite2.pixel(qx,qy,c)
+                j = qy * 100
+                j+= qx 
+                dest[j]=c
+            x+=1
+            i+=1
+        y+=1
+
+@micropython.viper
+def back_to_front_viper(length:int):
+    start=length
+    source=ptr16(s.sprite)
+    dest  =ptr16(s.sprite2)
+    while length:
+        dest[length]=source[start-length]
+        length-=1
+    
 
 def rot_test():
     x1=100
     y1=100
     lcd.show_xy(0,0,0+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite)
-    
-    for i in range(0,90,1):
+    j = range(0,90,1) # 90
+    for i in j:
         s.sprite2.fill(0)
+        rot_viper(i)
+       
         #rotate(i)
-        s.control[4]=i
-        a=(test_asm(s.sprite,s.sprite2,s.control))
+        #s.control[4]=i
+        #a=(test_asm(s.sprite,s.sprite2,s.control))
         
         lcd.show_xy(x1,y1,x1+SPRITE_WIDTH-1,y1+SPRITE_HEIGHT-1,s.sprite2)            
 
@@ -219,7 +268,15 @@ def fill_asm(r0,r1,r2,r3): # r0=address, r1= # of words, r2,r3=data
     bgt(LOOP)         # branch if not done
 
 @micropython.asm_thumb
-def flip_asm(r0,r1,r2): # r0=source address, r1=dest address, r2= # of words    
+def fill_asm2(r0,r1,r2): # r0=address, r1= # of words, r2=data
+    label(LOOP)
+    strh(r2, [r0, 0]) # store data in address of r0
+    add(r0, 2)        # add 2 to address (next word)
+    sub(r1, 1)        # dec number of words
+    bgt(LOOP)         # branch if not done
+
+@micropython.asm_thumb
+def back_to_front_asm(r0,r1,r2): # r0=source address, r1=dest address, r2= # of words    
     label(start)
     add(r1,r1,r2)     # set r1 to end of array
     add(r1,r1,r2)     # 4 * words
@@ -230,8 +287,19 @@ def flip_asm(r0,r1,r2): # r0=source address, r1=dest address, r2= # of words
     sub(r1, 2)        # sub n from dest address
     sub(r2, 1)        # dec number of words
     bgt(LOOP)         # branch if not done
-    
+
 @micropython.asm_thumb
+def copy_asm(r0,r1,r2): # r0=source address, r1=dest address, r2= # of words    
+    label(start)
+    label(LOOP)
+    ldr(r3, [r0, 0]) # load data from source
+    str(r3, [r1, 0]) # store data to dest
+    add(r0, 4)        # add 4 to source address
+    add(r1, 4)        # add 4 from dest address
+    sub(r2, 2)        # dec number of words
+    bgt(LOOP)         # branch if not done
+
+@micropython.asm_thumb # ??????
 def rot_asm(r0,r1,r2): # r0=source address, r1=dest address,r2 (width, height)    
     label(START)
     ldr(r3, [r2, CTL_HEIGHT])  # r3 = working height from control
@@ -250,8 +318,9 @@ def rot_asm(r0,r1,r2): # r0=source address, r1=dest address,r2 (width, height)
     sub(r3,2)         # dec working height
     bgt(HLOOP)
 
+
  
-@micropython.asm_thumb
+@micropython.asm_thumb # rot2 ??????
 def rot2_asm(r0,r1,r2): # r0=source address, r1=dest address,r2 (width, height, addr sin, addr cos)    
     label(START)
     ldr(r3, [r2, CTL_HEIGHT])  # r3 = working height from control
@@ -261,9 +330,7 @@ def rot2_asm(r0,r1,r2): # r0=source address, r1=dest address,r2 (width, height, 
     ldr(r5, [r2, 0])  # r5 = perm width from control
     mov(r6,r5)        # r6 = working width
     label(WLOOP)      # width loop    
-    ldrh(r7, [r0, 0]) # r7 = load data from source
-    
-    
+    ldrh(r7, [r0, 0]) # r7 = load data from source    
     add(r4,r4,r5)     # add perm width to working dest
     strh(r7, [r4, 0]) # store data to working dest
     add(r0,2)         # inc next source
@@ -272,6 +339,47 @@ def rot2_asm(r0,r1,r2): # r0=source address, r1=dest address,r2 (width, height, 
     sub(r3,2)         # dec working height
     bgt(HLOOP)
  
+@micropython.viper
+def rot90_viper(height:int):  # 5.25 second on 1000 loops at 100x100
+    length=height*height
+    source=ptr16(s.sprite)
+    dest  =ptr16(s.sprite2)
+    x = 0
+    while x<height:
+        y=height-1
+        while y>=0:
+            pos = y * height
+            pos+= x
+            dest[pos]=source[length]
+            length-=1
+            y-=1
+        x+=1
+
+@micropython.asm_thumb   # 1.07 second on 1000 loops at 100x100
+def rot90_asm(r0,r1,r2): # r0=source address, r1=dest address,r2=height    
+    label(START)
+    mov(r3,r2)
+    mul(r3,r3)        # length = height*height
+    add(r3,r3,r3)
+    add(r0,r0,r3)     # r0 = source add + length
+    mov(r5,0)         # r5  x = 0
+    label(HLOOP)      # height loop
+    mov(r3,r2)
+    label(WLOOP)      # width loop
+    mov(r4,r2)        # r4     = height
+    mul(r4,r3)        # r4 pos = height * y
+    add(r4,r4,r5)     # pos+= x
+    add(r4,r4,r4)     # double for 2 byte color
+    add(r4,r4,r1)     # r4 x+y(height)+dest
+    ldrh(r6, [r0, 0]) # r6 = source[r0]
+    strh(r6, [r4, 0]) # dest[r4]    
+    sub(r0,2)         # r0 length-=1 (2)
+    sub(r3,1)         # r3 y-=1
+    bgt(WLOOP) 
+    add(r5,1)         # x+=1
+    cmp(r5,r2)        # x < height
+    blt(HLOOP) 
+    label(EXIT)
 
 def fill_tests(test):
     gticks=ticks_us()
@@ -303,16 +411,8 @@ def bounce():
 
 
 
-isin=array.array('i',range(0,361))
-icos=array.array('i',range(0,361))
-init_isin()
-init_icos()
 
 
-        
-#fill_tests(0)
-#fill_tests(1)
-#fill_tests(3)
 
 @micropython.asm_thumb       #                                              0         4    8     12     16       20            24
 def test_asm(r0,r1,r2)->int: # r0=source address, r1=dest address,r2 (addr sin, addr cos,width, height, deg, multiplier, multiplier2 10_000)    
@@ -470,8 +570,49 @@ def test_asm(r0,r1,r2)->int: # r0=source address, r1=dest address,r2 (addr sin, 
 #     qy = int(offset_y + (sin_rad * adjusted_x)>>12 + (cos_rad * adjusted_y)>>12)
 #     s.sprite2.pixel(qx,qy,c) 
 
-    
-rot_test()
+s=Sprite()
+
+color = 0
+lcd = LCD_3inch5()
+lcd.bl_ctrl(50)
+lcd.Fill(lcd.BLACK)
+
+isin=array.array('i',range(0,361))
+icos=array.array('i',range(0,361))
+init_isin()
+init_icos()
+
+lcd.show_xy(0,0,0+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite)
+s.sprite2.fill(0)
+gticks=ticks_us()    
+#rot_test()
+#control = array.array('i',[0,0,200,200,0,0])
+control = array.array('i',[0,0,100,100,0,0])
+for i in range(1000):
+    #rot_asm(s.sprite,s.sprite2,control)
+    #back_to_front_asm(s.sprite,s.sprite2,100*100)
+    #copy_asm(s.sprite,s.sprite2,100*100)
+    #s.sprite2.fill(lcd.GREEN)
+    #s.copy_asm(s.sprite,s.sprite2,100*100)
+    #s.flip_asm(s.sprite,s.sprite2,100*100)
+    #back_to_front_viper(100*100)
+    #s.fill_asm(s.sprite2,100*100,lcd.GREEN)
+    #fill_asm(s.sprite2,100*100,0xff,0xff)
+    #rot90_viper(100)
+    rot90_asm(s.sprite,s.sprite2,100)
+    lcd.show_xy(200,0,200+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite)
+    sleep(0.1)
+    rot90_asm(s.sprite2,s.sprite,100)
+    lcd.show_xy(200,0,200+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite2)
+    sleep(0.1)
+delta = ticks_diff(ticks_us(), gticks)
+f0=(delta/1000000)
+print(f0)
+lcd.show_xy(200,0,200+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite2) 
+
+
+
+
 #print(isin[359])
 #s.control[0]=addressof(isin)
 #print(test_asm(s.sprite,s.sprite2,s.control))
