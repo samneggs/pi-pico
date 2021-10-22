@@ -7,7 +7,6 @@ from uctypes import addressof
 import array
 from usys import exit
 import gc
-import _thread
 
 SCREEN_WIDTH = const(350)
 SCREEN_HEIGHT = const(220)
@@ -22,6 +21,7 @@ CTL_M1=const(20)
 CTL_M2=const(24)
 SCALE=const(12)
 SCALE2=const(13)
+SCALE3=const(13)
 
 class Sprite():
     def __init__(self):
@@ -30,7 +30,7 @@ class Sprite():
         self.ax = 1
         self.ay = 1
         self.dir = 1
-        self.control = array.array('i',[0,0,200,100,1,500,10_000]) # sin,cos,w,h,deg,m1,m2
+        self.control = array.array('i',[0,0,100,100,1]) # sin,cos,w,h,deg
         self.buf = bytearray(SPRITE_WIDTH*SPRITE_HEIGHT*2)
         self.buf2 = bytearray(SPRITE_WIDTH*SPRITE_HEIGHT*2)
         self.sprite = framebuf.FrameBuffer(self.buf, SPRITE_WIDTH , SPRITE_HEIGHT, framebuf.RGB565)
@@ -40,14 +40,19 @@ class Sprite():
         self.dum3 = self.sprite.line(5,5,95,5,0xd0ff)
         self.dum4 = self.sprite.fill_rect(40,40,40,40,0x20d0)
         self.dum5 = self.copy_asm(self.sprite,self.sprite2,SPRITE_WIDTH*SPRITE_HEIGHT)
+        self.count = 0
     def move(self):
         self.x = self.x + self.ax
         self.y = self.y + self.ay
+        self.count += 1
+        if self.count == 10:
+            self.count = 0
+            self.rotate(self.dir+1)
         if self.x > SCREEN_WIDTH:
             self.x = SCREEN_WIDTH
             self.ax = - self.ax
             if self.ax<0:
-                self.rotate(2)
+                self.rotate(1)
         if self.x < 0:
             self.x = 0
             self.ax = - self.ax
@@ -57,12 +62,12 @@ class Sprite():
             self.y = SCREEN_HEIGHT
             self.ay = - self.ay
             if self.ay<0:
-                self.rotate(4) #
+                self.rotate(2) #
         if self.y < 0:
             self.y = 0
             self.ay = - self.ay
             if self.ay>0:
-                self.rotate(1) #
+                self.rotate(4) #
     @staticmethod
     @micropython.asm_thumb
     def rot_asm(r0,r1,r2): # r0=source address, r1=dest address,r2 (width, height)    
@@ -115,31 +120,15 @@ class Sprite():
         sub(r1, 1)        # dec number of words
         bgt(LOOP)         # branch if not done
     def rotate(self,new_dir):
-        while(1):
-            if self.dir == new_dir:
-                return
-            if self.dir == 4:
-                self.dir = 1    
-                self.flip_asm(s.sprite,s.sprite2,SPRITE_WIDTH*SPRITE_HEIGHT)
-                if self.dir == new_dir:
-                    return
-            if self.dir == 1:
-                self.dir = 2    
-                self.rot_asm(self.sprite2,self.sprite,self.control)
-                self.flip_asm(self.sprite,self.sprite2,SPRITE_WIDTH*SPRITE_HEIGHT)
-                if self.dir == new_dir:
-                    return
-            if self.dir == 2:
-                self.dir = 3        
-                self.copy_asm(self.sprite,self.sprite2,SPRITE_WIDTH*SPRITE_HEIGHT)
-                if self.dir == new_dir:
-                    return
-            if self.dir == 3:
-                self.dir = 4            
-                self.rot_asm(self.sprite2,self.sprite,self.control)
-                self.flip_asm(self.sprite,self.sprite2,SPRITE_WIDTH*SPRITE_HEIGHT)
-                self.copy_asm(self.sprite2,self.sprite,SPRITE_WIDTH*SPRITE_HEIGHT)
-
+        if new_dir>4:
+            new_dir = 1
+        while(self.dir != new_dir):
+            rot90_asm(s.sprite,s.sprite2,SPRITE_HEIGHT)
+            copy_asm(s.sprite2,s.sprite,100*100)           
+            self.dir+=1
+            if self.dir==5:
+                self.dir=1
+            
 
 def init_isin():            # integer sin lookup table    
     for i in range(0,360):
@@ -195,43 +184,41 @@ def irot_math(deg,x,y,c):
     #exit()
     s.sprite2.pixel(qx,qy,c)
     
-@micropython.viper
-def rot_viper(deg:int):
+@micropython.viper    # 0-90 deg 1.4 seconds 100x100,  10.5 seconds using pixel()
+def rot_viper(deg:int, width:int):
     sin=ptr32(isin)
     cos=ptr32(icos)
     source=ptr16(s.sprite)
     dest  =ptr16(s.sprite2)
-    y=0
-    i=0
-    while y<100: 
-        x=0
-        while x<100:
+    offset_x = width//2
+    offset_y = offset_x
+    cos_rad = cos[deg]
+    sin_rad = sin[deg]
+    y=width
+    while y: 
+        x=width
+        while x:
             #c=s.sprite.pixel(x,y)
-            c=source[i]
-            if c:
-                offset_x = 50
-                offset_y = 50
+            i=y*width+x
+            color=source[i]
+            if color:
                 adjusted_x = (x - offset_x)
                 adjusted_y = (y - offset_y)
-                cos_rad = cos[deg]
-                sin_rad = sin[deg]
                 qx = offset_x 
                 qx+= cos_rad * adjusted_x>>SCALE2
                 qx+= sin_rad * adjusted_y>>SCALE2
-                if qx<0 or qx>100:
+                if qx<0 or qx>width:
                     break
                 qy = offset_y
                 qy+= sin_rad * adjusted_x>>SCALE2
                 qy-= cos_rad * adjusted_y>>SCALE2
-                if qy<0 or qy>100:
+                if qy<0 or qy>width:
                     break
                 #s.sprite2.pixel(qx,qy,c)
-                j = qy * 100
-                j+= qx 
-                dest[j]=c
-            x+=1
-            i+=1
-        y+=1
+                i = qy * width + qx
+                dest[i]=color
+            x-=1
+        y-=1
 
 @micropython.viper
 def back_to_front_viper(length:int):
@@ -402,34 +389,37 @@ def fill_tests(test):
     print(f0)
     gticks=ticks_us()
     
-
 def bounce():
     s.move()
     lcd.show_xy(s.x,s.y,s.x+SPRITE_WIDTH-1,s.y+SPRITE_HEIGHT-1,s.sprite2)
-    #lcd.show_xy(0,0,SPRITE_WIDTH-1,SPRITE_HEIGHT-1,s.sprite)
     
-
-
-
-
-
-
+                             # 0.96 seconds 0-90 deg 100x100
 @micropython.asm_thumb       #                                              0         4    8     12     16       20            24
 def test_asm(r0,r1,r2)->int: # r0=source address, r1=dest address,r2 (addr sin, addr cos,width, height, deg, multiplier, multiplier2 10_000)    
     label(START)
-    
+    bl(CLS)                    # zero out sprite        
     ldr(r3, [r2, CTL_HEIGHT])  # r3 = height or y
     label(HLOOP)
     ldr(r4, [r2, CTL_WIDTH])   # r4 = width or x
     label(WLOOP)
-    ldrh(r6, [r0,0])           # load pixel color from source
+    
+    ldr(r7, [r2, CTL_HEIGHT])  # r7 = max height
+    mov(r5,r3)                 # r5 = r3 = y
+    mul(r5,r7)                 # y*height
+    add(r5,r5,r4)              # add x
+    add(r5,r5,r5)              # double (2 for pixel color)
+
+    add(r5,r5,r0)              # source addr + y(height)   
+    ldrh(r6, [r5,0])           # load pixel color from source
+    cmp(r6,0)                  # compare with zero
     beq(SKIP)                  # skip if zero (black)
+    push({r6})                 # save color
     
     bl(OFFSET_Y)               # jump offset_y
     sub(r5,r3,r5)              # r5 =   adjusted_y = (y - offsety)
     bl(SIN)                    # jump sin
     mul(r5,r6)                 # r5 = adjusted_y * sin
-    mov(r6,SCALE)              # r6 = 12
+    mov(r6,SCALE3)              # r6 = 12
     lsr(r5,r6)                 # r5 >> 12    
   
     push({r5})                 # save r5 (adjusted_y * sin)>>12
@@ -442,7 +432,7 @@ def test_asm(r0,r1,r2)->int: # r0=source address, r1=dest address,r2 (addr sin, 
     mul(r5,r6)                 # r5 = adjusted_x * cos
     
     
-    mov(r6,SCALE)              # r6 = 1
+    mov(r6,SCALE3)              # r6 = 1
     lsr(r5,r6)                 # r5 >> 12  (good)
     
     push({r5})                 # save r5 (adjusted_x * cos)>>12
@@ -455,28 +445,26 @@ def test_asm(r0,r1,r2)->int: # r0=source address, r1=dest address,r2 (addr sin, 
     add(r5,r5,r7)              # +(sin_rad * adjusted_y)>>12
    
    
-    bmi(SKIP)                  # branch if negative
-    ldr(r7, [r2, CTL_WIDTH])  # r4 = width or x
+    bmi(POPSKIP)               # branch if negative
+    ldr(r7, [r2, CTL_WIDTH])   # r4 = width or x
     cmp(r7, r5)                # is x > width?
-    bmi(SKIP)                  # too big skip
-    
-    
-    
+    bmi(POPSKIP)               # too big skip
+        
     push({r5})                 # save qx
     
     bl(OFFSET_Y)               # jump offset_y
     sub(r5,r3,r5)              # r5 =   adjusted_y = (y - offsety)
     bl(COS)                    # jump cos
     mul(r5,r6)                 # r5 = adjusted_y * cos
-    mov(r6,SCALE)              # r6 = 1
+    mov(r6,SCALE3)              # r6 = 1
     lsr(r5,r6)                 # r5 >> 12
-    push({r5})                # save r5 (adjusted_y * cos)>>12
+    push({r5})                 # save r5 (adjusted_y * cos)>>12
     
     bl(OFFSET_X)               # jump offset_x
     sub(r5,r4,r5)              # r5 =  adjusted_x = (x - offsetx)
     bl(SIN)                    # jump sin
     mul(r5,r6)                 # r5 = adjusted_x * sin
-    mov(r6,SCALE)              # r6 = 1
+    mov(r6,SCALE3)              # r6 = 1
     lsr(r5,r6)                 # r5 >> 12
     push({r5})                 # save r5 (adjusted_x * sin)>>12
 
@@ -484,27 +472,23 @@ def test_asm(r0,r1,r2)->int: # r0=source address, r1=dest address,r2 (addr sin, 
     pop({r6,r7})               # retrieve (cos_rad * adjusted_y)>>12 , (sin_rad * adjusted_x)>>12
     sub(r5,r5,r6)              # -(adjusted_x * sin)>>12
     add(r5,r5,r7)              # +(adjusted_y * cos)>>12
-    bmi(POPSKIP)               # branch if negative
+    bmi(POPSKIP2)              # branch if negative
     ldr(r7, [r2, CTL_WIDTH])   # r7 = max width
     cmp(r7, r5)                # is x > width?
-    bmi(POPSKIP)               # too big skip
-  
+    bmi(POPSKIP2)              # too big skip
+    
     ldr(r7, [r2, CTL_HEIGHT])  # r7 = max height
     mul(r5,r7)                 # qy*height
-    add(r5,r5,r1)              # dest addr + qy(height)
     pop({r6})                  # get qx
-    mov(r7,1)
-    lsl(r6,r7)                 # x times 2 for pixel color 
-    add(r5,r5,r6)              # dest addr + qy(height) + qx
-   
+    add(r5,r5,r6)              # qy*height + qx
+    add(r5,r5,r5)              # double
+    add(r5,r5,r1)              # dest addr + qy(height)    
+    pop({r6})                  # get color
     
-    ldrh(r6, [r0,0])           # load pixel color from source
     strh(r6, [r5,0])           # store pixel color to dest
-    
- 
+     
     label(SKIP)
-    add(r0,2)                  # next source 
-    sub(r4,1)                  # dec x by 2
+    sub(r4,1)                  # dec x by 1
     bgt(WLOOP)
     sub(r3,1)                  # dec y by 1
     bgt(HLOOP)
@@ -512,6 +496,8 @@ def test_asm(r0,r1,r2)->int: # r0=source address, r1=dest address,r2 (addr sin, 
     b(EXIT)                    # exit
     
     # ----------------------------------------------------------------------------------- subroutines   
+    label(POPSKIP2)             # pop then skip
+    pop({r7})
     label(POPSKIP)             # pop then skip
     pop({r7})
     b(SKIP)
@@ -557,38 +543,44 @@ def test_asm(r0,r1,r2)->int: # r0=source address, r1=dest address,r2 (addr sin, 
     add(r6,r6,r7)           # cos addr + deg offset 
     ldr(r6, [r6,  0])       # r6 = cos(degrees)
     bx(lr)
-    
+
+    label(CLS)        # clear the screen, uses r3,r4,r5
+    ldr(r3, [r2, CTL_HEIGHT])  # r3 = height or y
+    mul(r3,r3)        # r3 = number of words to clear    
+    mov(r4,r1)        # r4 = address
+    mov(r5,0)         # r5 = data to load
+    label(CLS_LOOP)
+    strh(r5, [r4, 0]) # store data in address
+    add(r4, 2)        # add 2 to address (next word)
+    sub(r3, 1)        # dec number of words
+    bgt(CLS_LOOP)         # branch if not done
+    bx(lr)
+
     label(EXIT) 
 
-#     offset_x = 50
-#     offset_y = 50
-#     adjusted_x = (x - offset_x)
-#     adjusted_y = (y - offset_y)
-#     cos_rad = icos[deg]
-#     sin_rad = isin[deg]
-#     qx = int(offset_x + (cos_rad * adjusted_x)>>12 - (sin_rad * adjusted_y)>>12)
-#     qy = int(offset_y + (sin_rad * adjusted_x)>>12 + (cos_rad * adjusted_y)>>12)
-#     s.sprite2.pixel(qx,qy,c) 
 
 s=Sprite()
 
 color = 0
 lcd = LCD_3inch5()
 lcd.bl_ctrl(50)
-lcd.Fill(lcd.BLACK)
+lcd.Fill(lcd.BLUE)
 
 isin=array.array('i',range(0,361))
 icos=array.array('i',range(0,361))
 init_isin()
 init_icos()
 
+
+
+copy_asm(s.sprite,s.sprite2,100*100)
 lcd.show_xy(0,0,0+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite)
 s.sprite2.fill(0)
 gticks=ticks_us()    
 #rot_test()
 #control = array.array('i',[0,0,200,200,0,0])
 control = array.array('i',[0,0,100,100,0,0])
-for i in range(1000):
+for i in range(90):
     #rot_asm(s.sprite,s.sprite2,control)
     #back_to_front_asm(s.sprite,s.sprite2,100*100)
     #copy_asm(s.sprite,s.sprite2,100*100)
@@ -596,27 +588,26 @@ for i in range(1000):
     #s.copy_asm(s.sprite,s.sprite2,100*100)
     #s.flip_asm(s.sprite,s.sprite2,100*100)
     #back_to_front_viper(100*100)
-    #s.fill_asm(s.sprite2,100*100,lcd.GREEN)
+    s.fill_asm(s.sprite2,100*100,lcd.BLACK)
+    #lcd.show_xy(200,0,200+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite2)
+    #sleep(1)
+    
+    #s.control[4]=i
+    #test_asm(s.sprite,s.sprite2,s.control)
     #fill_asm(s.sprite2,100*100,0xff,0xff)
-    #rot90_viper(100)
-    rot90_asm(s.sprite,s.sprite2,100)
-    lcd.show_xy(200,0,200+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite)
-    sleep(0.1)
-    rot90_asm(s.sprite2,s.sprite,100)
+    
+    rot_viper(i,100)
     lcd.show_xy(200,0,200+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite2)
-    sleep(0.1)
+    #rot90_asm(s.sprite,s.sprite2,100)
+    #copy_asm(s.sprite2,s.sprite,100*100)
+    #lcd.show_xy(200,0,200+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite)
+    #sleep(0.1)
+
 delta = ticks_diff(ticks_us(), gticks)
 f0=(delta/1000000)
 print(f0)
 lcd.show_xy(200,0,200+SPRITE_WIDTH-1,0+SPRITE_HEIGHT-1,s.sprite2) 
 
-
-
-
-#print(isin[359])
-#s.control[0]=addressof(isin)
-#print(test_asm(s.sprite,s.sprite2,s.control))
-#print(s.control[4])
 exit()
 
 
